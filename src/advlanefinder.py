@@ -63,8 +63,11 @@ class AdvancedLaneFinder(object):
         self.persInvTransM = None
         self.leftFit = None     #Polygon for left lane
         self.rightFit = None    #polygon for right lane
-        self.leftCurverad = None 
+        self.leftCurverad = None
         self.rightCurverad = None
+        self.carPos = None      #carPos in meters, negative means left to middle of lane
+        self.noRecoveries = 0   #no of recoveries (fetching histogram again)
+        self.counter = 0
      
     
 
@@ -73,6 +76,9 @@ class AdvancedLaneFinder(object):
         cv2.imshow(title,img)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
+        
+    def writeImage(img, filename="R:\output.jpg"):
+        cv2.imwrite(filename, img)
 
     def writeMembers(self, path):
         dataToWrite = (self.camMatrix, self.distCoeff, self.rotVec, self.traVec)
@@ -92,7 +98,9 @@ class AdvancedLaneFinder(object):
         img = cv2.imread(filepath)
         undiImg = cv2.undistort(img, self.camMatrix, self.distCoeff, None, self.camMatrix)        
         cv2.imshow("Distorted", img)
+        AdvancedLaneFinder.writeImage(img, "R:/Distorted.jpg")
         cv2.imshow("Undistorted", undiImg)
+        AdvancedLaneFinder.writeImage(undiImg, "R:/Undistorted.jpg")
         cv2.waitKey(0)
         cv2.destroyAllWindows()
     
@@ -100,16 +108,33 @@ class AdvancedLaneFinder(object):
         return cv2.undistort(image, self.camMatrix, self.distCoeff, None, self.camMatrix)     
         
     def initializeTransformMatrix(self, image = None):
+#         src = np.float32(
+#             [[575,460],
+#              [704,460],
+#              [1046,672],
+#              [259,672]])
         src = np.float32(
-            [[575,460],
-             [704,460],
-             [1046,672],
-             [259,672]])
+            [[577,461],
+             [707,461],
+             [1029,666],
+             [275,666]])
+#         src = np.float32(
+#             [[562,461],
+#              [720,461],
+#              [1029,666],
+#              [275,666]])
+        #TAKE CARE:
+        #In order to calculate a valid curvature radius, I must not
+        #change the dimensions in X-direction! Otherwise the curvature 
+        #calculation will mess up - this is based on some constants
+        #which reflect distance-meter in units of pixel.
+        #Please note: it is uncritical for y direction - we always
+        #assume a lenght of 720 px
         dst = np.float32(
-            [[200, 30],
-             [1080,30],
-             [1080,690],
-             [200,690]])
+            [[275, 30],
+             [1029,30],
+             [1029,720],
+             [275,720]])
         self.persTransM = cv2.getPerspectiveTransform(src, dst)
         self.persInvTransM = cv2.getPerspectiveTransform(dst, src)
         
@@ -152,8 +177,8 @@ class AdvancedLaneFinder(object):
         #convert to 8 bit gray-value
         scaledSobel = np.uint8(255*absSobel/np.max(absSobel))
         output = np.zeros_like(scaledSobel)
-        output[ ((absgraddir >= directionThresh[0]) & (absgraddir <= directionThresh[1]) ) &\
-               ((scaledSobel >= xgradThresh[0]) & (scaledSobel <= xgradThresh[1]) )] = 255
+        output[ #((absgraddir >= directionThresh[0]) & (absgraddir <= directionThresh[1]) ) &\
+            ((scaledSobel >= xgradThresh[0]) & (scaledSobel <= xgradThresh[1]) )] = 255
         return output
 
     def calibrateCameraUsingImage(self, imagepath):
@@ -191,15 +216,21 @@ class AdvancedLaneFinder(object):
             #find the chessboard, store the image points in corners
             ret, corners = cv2.findChessboardCorners(img, noCorners, None)
             
+#             print (objp, "ObjPtr", objpoints)
+            
+            
             if True == ret :
                 #success, store the image-/object points
                 objpoints.append(objp)
                 imgpoints.append(corners)
-                image = cv2.drawChessboardCorners(image, (9,6), corners, ret)
-                cv2.imshow('img',image)
+                img = cv2.drawChessboardCorners(image, (9,6), corners, ret)
+                cv2.imshow("Chessboard", img)
                 cv2.waitKey(500)
+                
 
         #after iterating through all our camera_cal images, we do the calibration
+        print ("Calibration using {0:d} Objectpoints".format(len(objpoints)))
+        print (objpoints[0].shape, imgpoints[0].shape)
         if(len(objpoints)==len(imgpoints) and 0!=len(objpoints) ):
             ret, self.camMatrix, self.distCoeff, self.rotVec, self.traVec = \
                 cv2.calibrateCamera(objpoints, imgpoints, camScope, None, None)
@@ -212,8 +243,12 @@ class AdvancedLaneFinder(object):
 #             cv2.imwrite("R:\\pic{:03d}.jpg".format(self.counter), image)
 #         self.counter += 1
         #val = self.applyGradient(self.applyColorSpaceTransformation(image), (40,74), (20, 100) ) 
-        val = self.applyColorSpaceTransformation(image, 170)
+        val = self.applyColorSpaceTransformation(image, 120)
         val2 = self.applyGradient(image, (40,74), (20, 100))
+#         val2 = self.applyGradient(image, (70,110), (0, 255))
+#         cv2.imshow("Input", image)
+#         cv2.imshow("Color", val)
+#         cv2.imshow("Gra", val2)
         val3 = np.zeros_like(val2)
         val3[(val == 255) | (val2 == 255) ] = 255
         
@@ -322,39 +357,61 @@ class AdvancedLaneFinder(object):
         cv2.polylines(out_img, [ptsl], False, (0,0,255), 8)
         cv2.polylines(out_img, [ptsr], False, (0,0,255), 8)
         cv2.fillPoly(out_img, [pts], (0,255,0))
+
+#         lalaLand = np.dstack((image*1, image*1, image*1))
+#         cv2.imshow("lLA", lalaLand)
+#         cv2.addWeighted(out_img, 0.8, lalaLand, 0.3, 0)
+#         cv2.imshow("Persp", out_img)
+        
         
         y_eval = np.max(ploty)
-        
-        print (y_eval)
         # Define conversions in x and y from pixels space to meters
+        # MAKE SURE YOU DIDN'T CHANGE THE DIMENSIONS IN X-AXIS DURING
+        # PERSPECTIVE TRANSFORMATION
         ym_per_pix = 30/720 # meters per pixel in y dimension
-        xm_per_pix = 3.7/1280 # meters per pixel in x dimension
+        xm_per_pix = 3.7/700 # meters per pixel in x dimension
         
-        print(ploty.shape, left_fitx.shape)
-        # Fit new polynomials to x,y in world space
-        left_fit_cr = np.polyfit(ploty*ym_per_pix, left_fitx*xm_per_pix, 2)
-        right_fit_cr = np.polyfit(ploty*ym_per_pix, right_fitx*xm_per_pix, 2)
-        # Calculate the new radii of curvature
-        self.leftCurverad  = ((1 + (2*left_fit_cr[0 ]*y_eval*ym_per_pix + left_fit_cr[1 ])**2)**1.5) / np.absolute(2*left_fit_cr[0 ])
-        self.rightCurverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
-        print (self.leftCurverad, self.rightCurverad)
-#         self.leftCurverad = ((1 + (2*self.leftFit[0] *y_eval + self.leftFit[1] )**2)**1.5) / np.absolute(2*self.leftFit[0] )
-#         self.rightCurverad =((1 + (2*self.rightFit[0]*y_eval + self.rightFit[1])**2)**1.5) / np.absolute(2*self.rightFit[0])
+        
+        #straight Sanity check: if the distance between the lanes 
+        #at the car and in the horizont are differing in about 1m - it's time
+        #to research for lanes using the histogram
+        dist_betweenLanes_car = (right_fitx[-1] - left_fitx[-1]) * xm_per_pix
+        dist_betweenLanes_horizont = (right_fitx[0] - left_fitx[0]) * xm_per_pix
+        self.carPos = ((1280/2.) - (left_fitx[-1] + dist_betweenLanes_car/2.0))   * xm_per_pix;
+        
+        if(abs(dist_betweenLanes_car - dist_betweenLanes_horizont) > 1.0):
+            print ("Sanity check failed distance of cams {0:.1f} {1:.1f}".format(dist_betweenLanes_car, dist_betweenLanes_horizont))
+            self.leftCurverad = None
+            self.rightCurverad = None
+            self.leftFit = None
+            self.rightFit = None
+            self.noRecoveries +=1
+        else:
+            # Fit new polynomials to x,y in world space
+            left_fit_cr = np.polyfit(ploty*ym_per_pix, left_fitx*xm_per_pix, 2)
+            right_fit_cr = np.polyfit(ploty*ym_per_pix, right_fitx*xm_per_pix, 2)
+            # Calculate the new radii of curvature
+            self.leftCurverad  = ((1 + (2*left_fit_cr[0 ]*y_eval*ym_per_pix + left_fit_cr[1 ])**2)**1.5) / np.absolute(2*left_fit_cr[0 ])
+            self.rightCurverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
         
 #         cv2.polylines(out_img, [ptsl], False, (0,0,255),8 )
 #         cv2.polylines(out_img, [ptsr], False, (0,0,255),8 )
         
-        cv2.imshow("Coords", out_img)
         return out_img
         
         
     def doAll(self, image):
         img = finder.undistortImage(image)
-        img = finder.transformPerspective(img)
         img = finder.findEdges(img)
+        img = finder.transformPerspective(img)
         img = finder.findPolygons(img)
         img = finder.transformPerspective(img, False)
-        cv2.putText(img, "curvLeft {0:.2f}m curvRight {1:.2f}m".format(self.leftCurverad, self.rightCurverad), (10,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
+        if not (self.leftCurverad is None):
+            cv2.putText(img, "curvLeft {0:.2f}m curvRight {1:.2f}m".format(self.leftCurverad, self.rightCurverad), (10,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
+            cv2.putText(img, "Car is {0:.1f}m from middle of lane".format(self.carPos), (10,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
+            cv2.putText(img, "No recoveries {0:d}".format(self.noRecoveries), (10,150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
+        else:
+            cv2.putText(img, "Sanity check failed - restart histogram search", (10,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
         return cv2.addWeighted(image, 0.8, img, 0.3, 0)
 #         return img  
     
@@ -364,6 +421,7 @@ class AdvancedLaneFinder(object):
     #_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/
     #/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_            
     showImage = staticmethod(showImage)
+    writeImage = staticmethod(writeImage)
 
 if __name__ == '__main__':
     
@@ -378,21 +436,24 @@ if __name__ == '__main__':
         finder.calibrateCameraUsingImage("R:/camera_cal")
         finder.writeMembers(PERSISTENCE)
     
-    #finder.exampleShowUndistorted("R:/camera_cal/calibration9.jpg")
+#     finder.exampleShowUndistorted("../test_images/straight_lines1.jpg")
     
-#     img = cv2.imread("../test_images/straight_lines1.jpg")
-    img = cv2.imread("../test_images/test5.jpg")
+#     img = cv2.imread("../test_images/straight_lines2.jpg")
+    img = cv2.imread("R:/pic001.jpg")
 #     AdvancedLaneFinder.showImage(finder.initializeTransformMatrix(img))
 
 
     finder.initializeTransformMatrix()
 #     img = finder.undistortImage(img)
 #     img = finder.transformPerspective(img)
+#     AdvancedLaneFinder.writeImage(img, "R:/Perspective_example001.jpg")
 #     img = finder.findEdges(img)
-#     img = finder.findPolygons(img)
-    img = finder.doAll(img)
-    AdvancedLaneFinder.showImage(img)
-    exit(1)
+# #     AdvancedLaneFinder.writeImage(img, "R:/FindEdges_Binary.jpg")
+# #     img = finder.findPolygons(img)
+# 
+#     img = finder.doAll(img)
+#     AdvancedLaneFinder.showImage(img)
+#     exit(1)
     
     
 #     AdvancedLaneFinder.showImage(finder.transformPerspective(img))
@@ -412,8 +473,9 @@ if __name__ == '__main__':
 #     imageio.plugins.ffmpeg.download()
 
 
-#     clip1 = VideoFileClip("../project_video.mp4")
-    clip1 = VideoFileClip("../short.mp4")
+    clip1 = VideoFileClip("../project_video.mp4")
+#     clip1 = VideoFileClip("../critical.mp4")
+#     clip1 = VideoFileClip("../short.mp4")
     clipo = clip1.fl_image(lambda x: cv2.cvtColor(finder.doAll(\
               cv2.cvtColor(x, cv2.COLOR_RGB2BGR) ), cv2.COLOR_BGR2RGB ))
     clipo.write_videofile("R:\\test.mp4", audio=False)
