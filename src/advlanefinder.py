@@ -60,7 +60,12 @@ class AdvancedLaneFinder(object):
         self.rotVec = None      #rotation vectors
         self.traVec = None      #translation vectors
         self.persTransM = None
-        self.counter = 0
+        self.persInvTransM = None
+        self.leftFit = None     #Polygon for left lane
+        self.rightFit = None    #polygon for right lane
+        self.leftCurverad = None 
+        self.rightCurverad = None
+     
     
 
     #static: display an image
@@ -90,6 +95,9 @@ class AdvancedLaneFinder(object):
         cv2.imshow("Undistorted", undiImg)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
+    
+    def undistortImage(self, image):
+        return cv2.undistort(image, self.camMatrix, self.distCoeff, None, self.camMatrix)     
         
     def initializeTransformMatrix(self, image = None):
         src = np.float32(
@@ -97,17 +105,13 @@ class AdvancedLaneFinder(object):
              [704,460],
              [1046,672],
              [259,672]])
-#         dst = np.float32(
-#             [[0,0],
-#              [1050-245,0],
-#              [1050-245,680-460],
-#              [0,680-460]])
         dst = np.float32(
-            [[100, 30],
-             [1180,30],
-             [1180,690],
-             [100,690]])
+            [[200, 30],
+             [1080,30],
+             [1080,690],
+             [200,690]])
         self.persTransM = cv2.getPerspectiveTransform(src, dst)
+        self.persInvTransM = cv2.getPerspectiveTransform(dst, src)
         
         if not image is None:
             cv2.circle(image, tuple(src[0]), 5, (255,255,255),4)
@@ -117,9 +121,11 @@ class AdvancedLaneFinder(object):
         
         return image
                 
-    def transformPerspective(self, image):
+    def transformPerspective(self, image, forward = True):
         dim = image.shape[:2]
-        return cv2.warpPerspective(image, self.persTransM, (dim[1], dim[0]))
+        if True == forward:
+            return cv2.warpPerspective(image, self.persTransM, (dim[1], dim[0]))
+        return cv2.warpPerspective(image, self.persInvTransM, (dim[1], dim[0]))
         
     def applyColorSpaceTransformation(self, image, thresh = 150):
         sat = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)[:,:,2]
@@ -211,7 +217,146 @@ class AdvancedLaneFinder(object):
         val3 = np.zeros_like(val2)
         val3[(val == 255) | (val2 == 255) ] = 255
         
-        return np.dstack( (val3, val3*0, val3*0) )
+        return val3
+#         return np.dstack( (val3, val3*0, val3*0) )
+    
+    
+    def findPolygons(self, image):
+        
+        out_img = np.dstack((image*0, image*0, image*0))
+        #identify the elements in the image, which aren't zero - meaning not black
+        #this is done by image.nonzero!!
+        nonzero = image.nonzero()
+        nonzeroy = np.array(nonzero[0])
+        nonzerox = np.array(nonzero[1])
+        # Set the width of the windows +/- margin
+        margin = 50
+        # Set minimum number of pixels found to recenter window
+        minpix = 50
+        
+        
+        leftx = None
+        lefty = None 
+        
+        if( (self.leftFit == None) | (self.rightFit == None)):
+            #create historgram along x-axis from the lower half of the picture
+            #to find an appropriate startpoint for lane detection
+            histogram = np.sum(image[np.int(image.shape[0]/2):,:], axis = 0)
+            midpoint = np.int(histogram.shape[0]/2)
+            leftx_base = np.argmax(histogram[:midpoint])
+            rightx_base = np.argmax(histogram[midpoint:]) + midpoint
+    #         cv2.circle(out_img, (leftx_base, int(image.shape[0]/2)), 5, (255,0,0),4)
+    #         cv2.circle(out_img, (rightx_base, int(image.shape[0]/2)+50), 5, (255,0,0),4)
+    #         cv2.circle(out_img, (midpoint, int(image.shape[0]/2)+100), 5, (255,0,0),4)
+            
+            noWindows = 9
+            window_height = np.int(image.shape[0]/noWindows)
+            
+            # Current positions to be updated for each window
+            leftx_current = leftx_base
+            rightx_current = rightx_base
+
+            # Create empty lists to receive left and right lane pixel indices
+            left_lane_inds = []
+            right_lane_inds = []
+            # Step through the windows one by one
+            for window in range(noWindows):
+                # Identify window boundaries in x and y (and right and left)
+                win_y_low = image.shape[0] - (window+1)*window_height
+                win_y_high = image.shape[0] - window*window_height
+                win_xleft_low = leftx_current - margin
+                win_xleft_high = leftx_current + margin
+                win_xright_low = rightx_current - margin
+                win_xright_high = rightx_current + margin
+                # Draw the windows on the visualization image
+                cv2.rectangle(out_img,(win_xleft_low,win_y_low),(win_xleft_high,win_y_high),(0,255,0), 2) 
+                cv2.rectangle(out_img,(win_xright_low,win_y_low),(win_xright_high,win_y_high),(0,255,0), 2) 
+                # Identify the nonzero pixels in x and y within the window
+                #big matrix which contains true/false and this is converted into a matrix of indicies (nonzero)
+                good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
+                good_right_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
+                # Append these indices to the lists
+                left_lane_inds.append(good_left_inds)
+                right_lane_inds.append(good_right_inds)
+                # If you found > minpix pixels, recenter next window on their mean position
+                if len(good_left_inds) > minpix:
+                    leftx_current = np.int(np.mean(nonzerox[good_left_inds]))
+                if len(good_right_inds) > minpix:        
+                    rightx_current = np.int(np.mean(nonzerox[good_right_inds]))
+                
+            # Concatenate the arrays of indices (from list to array)
+            left_lane_inds = np.concatenate(left_lane_inds)
+            right_lane_inds = np.concatenate(right_lane_inds)
+            
+            # Extract left and right line pixel positions
+            leftx = nonzerox[left_lane_inds]
+            lefty = nonzeroy[left_lane_inds] 
+            rightx = nonzerox[right_lane_inds]
+            righty = nonzeroy[right_lane_inds] 
+        
+            # Fit a second order polynomial to each
+            self.leftFit = np.polyfit(lefty, leftx, 2)
+            self.rightFit = np.polyfit(righty, rightx, 2)
+        else:
+            left_lane_inds = ((nonzerox > (self.leftFit[0]*(nonzeroy**2) + self.leftFit[1]*nonzeroy + self.leftFit[2] - margin)) & (nonzerox < (self.leftFit[0]*(nonzeroy**2) + self.leftFit[1]*nonzeroy + self.leftFit[2] + margin))) 
+            right_lane_inds = ((nonzerox > (self.rightFit[0]*(nonzeroy**2) + self.rightFit[1]*nonzeroy + self.rightFit[2] - margin)) & (nonzerox < (self.rightFit[0]*(nonzeroy**2) + self.rightFit[1]*nonzeroy + self.rightFit[2] + margin)))  
+            
+            # Again, extract left and right line pixel positions
+            leftx = nonzerox[left_lane_inds]
+            lefty = nonzeroy[left_lane_inds] 
+            rightx = nonzerox[right_lane_inds]
+            righty = nonzeroy[right_lane_inds]
+            # Fit a second order polynomial to each
+            self.leftFit = np.polyfit(lefty, leftx, 2)
+            self.rightFit = np.polyfit(righty, rightx, 2)
+            
+        
+        # Generate x and y values for plotting
+        ploty = np.linspace(0, image.shape[0]-1, image.shape[0] )
+        left_fitx = self.leftFit[0]*ploty**2 + self.leftFit[1]*ploty + self.leftFit[2]
+        right_fitx = self.rightFit[0]*ploty**2 + self.rightFit[1]*ploty + self.rightFit[2]
+        
+        ptsl = np.column_stack( (left_fitx.astype(np.int32), ploty.astype(np.int32)))
+        ptsr = np.column_stack( (right_fitx.astype(np.int32), ploty.astype(np.int32)))
+        pts = np.concatenate((ptsl, np.flipud(ptsr)))
+        cv2.polylines(out_img, [ptsl], False, (0,0,255), 8)
+        cv2.polylines(out_img, [ptsr], False, (0,0,255), 8)
+        cv2.fillPoly(out_img, [pts], (0,255,0))
+        
+        y_eval = np.max(ploty)
+        
+        print (y_eval)
+        # Define conversions in x and y from pixels space to meters
+        ym_per_pix = 30/720 # meters per pixel in y dimension
+        xm_per_pix = 3.7/1280 # meters per pixel in x dimension
+        
+        print(ploty.shape, left_fitx.shape)
+        # Fit new polynomials to x,y in world space
+        left_fit_cr = np.polyfit(ploty*ym_per_pix, left_fitx*xm_per_pix, 2)
+        right_fit_cr = np.polyfit(ploty*ym_per_pix, right_fitx*xm_per_pix, 2)
+        # Calculate the new radii of curvature
+        self.leftCurverad  = ((1 + (2*left_fit_cr[0 ]*y_eval*ym_per_pix + left_fit_cr[1 ])**2)**1.5) / np.absolute(2*left_fit_cr[0 ])
+        self.rightCurverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
+        print (self.leftCurverad, self.rightCurverad)
+#         self.leftCurverad = ((1 + (2*self.leftFit[0] *y_eval + self.leftFit[1] )**2)**1.5) / np.absolute(2*self.leftFit[0] )
+#         self.rightCurverad =((1 + (2*self.rightFit[0]*y_eval + self.rightFit[1])**2)**1.5) / np.absolute(2*self.rightFit[0])
+        
+#         cv2.polylines(out_img, [ptsl], False, (0,0,255),8 )
+#         cv2.polylines(out_img, [ptsr], False, (0,0,255),8 )
+        
+        cv2.imshow("Coords", out_img)
+        return out_img
+        
+        
+    def doAll(self, image):
+        img = finder.undistortImage(image)
+        img = finder.transformPerspective(img)
+        img = finder.findEdges(img)
+        img = finder.findPolygons(img)
+        img = finder.transformPerspective(img, False)
+        cv2.putText(img, "curvLeft {0:.2f}m curvRight {1:.2f}m".format(self.leftCurverad, self.rightCurverad), (10,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
+        return cv2.addWeighted(image, 0.8, img, 0.3, 0)
+#         return img  
     
     #/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_
     #_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/
@@ -235,12 +380,22 @@ if __name__ == '__main__':
     
     #finder.exampleShowUndistorted("R:/camera_cal/calibration9.jpg")
     
-    img = cv2.imread("../test_images/straight_lines1.jpg")
+#     img = cv2.imread("../test_images/straight_lines1.jpg")
+    img = cv2.imread("../test_images/test5.jpg")
 #     AdvancedLaneFinder.showImage(finder.initializeTransformMatrix(img))
-    AdvancedLaneFinder.showImage(finder.findEdges(finder.transformPerspective(finder.initializeTransformMatrix(img))))
+
+
+    finder.initializeTransformMatrix()
+#     img = finder.undistortImage(img)
+#     img = finder.transformPerspective(img)
+#     img = finder.findEdges(img)
+#     img = finder.findPolygons(img)
+    img = finder.doAll(img)
+    AdvancedLaneFinder.showImage(img)
+    exit(1)
     
     
-    AdvancedLaneFinder.showImage(finder.transformPerspective(img))
+#     AdvancedLaneFinder.showImage(finder.transformPerspective(img))
 # #    img = cv2.imread("R://pic042.jpg")
 #     val = finder.applyColorSpaceTransformation(img, 170)
 #     cv2.imshow("ColorSpace", val)
@@ -258,9 +413,10 @@ if __name__ == '__main__':
 
 
 #     clip1 = VideoFileClip("../project_video.mp4")
-#     clipo = clip1.fl_image(lambda x: finder.findEdges(\
-#               cv2.cvtColor(x, cv2.COLOR_RGB2BGR) ) )
-#     clipo.write_videofile("R:\\test.mp4", audio=False)
+    clip1 = VideoFileClip("../short.mp4")
+    clipo = clip1.fl_image(lambda x: cv2.cvtColor(finder.doAll(\
+              cv2.cvtColor(x, cv2.COLOR_RGB2BGR) ), cv2.COLOR_BGR2RGB ))
+    clipo.write_videofile("R:\\test.mp4", audio=False)
     
 #     for img in ReadFileIterator("../camera_cal"):
 #         calibrateCameraUsingImage(img)
