@@ -11,7 +11,7 @@ Created on 08.07.2017
 # 2. use color transformation
 # 3. use gradients
 # 4. get binary image 
-# 5. apply perspective transofmration
+# 5. apply perspective transformation
 # 6. detect lane pixels
 # 7. determine curvature of the line
 # 8. apply lane boundary to the original image
@@ -49,10 +49,6 @@ class ReadFileIterator(object):
             raise StopIteration()
 
 class AdvancedLaneFinder(object):
-#     def readImages(pathToImage, fileEnding = "*.jpg"):
-#         filenames = glob.glob(os.path.join(pathToImage, fileEnding))
-#         print (filenames)
-     
     def __init__(self):
         #Members used for undistortion
         self.camMatrix = None   #CamMatrix
@@ -65,10 +61,11 @@ class AdvancedLaneFinder(object):
         self.rightFit = None    #polygon for right lane
         self.leftCurverad = None
         self.rightCurverad = None
+        self.carPx = None
         self.carPos = None      #carPos in meters, negative means left to middle of lane
         self.noRecoveries = 0   #no of recoveries (fetching histogram again)
-        self.counter = 0
-     
+        
+        self.counter = 0        #counter variable
     
 
     #static: display an image
@@ -108,36 +105,29 @@ class AdvancedLaneFinder(object):
         return cv2.undistort(image, self.camMatrix, self.distCoeff, None, self.camMatrix)     
         
     def initializeTransformMatrix(self, image = None):
-#         src = np.float32(
-#             [[575,460],
-#              [704,460],
-#              [1046,672],
-#              [259,672]])
         src = np.float32(
             [[577,461],
              [707,461],
              [1029,666],
              [275,666]])
-#         src = np.float32(
-#             [[562,461],
-#              [720,461],
-#              [1029,666],
-#              [275,666]])
-        #TAKE CARE:
-        #In order to calculate a valid curvature radius, I must not
-        #change the dimensions in X-direction! Otherwise the curvature 
-        #calculation will mess up - this is based on some constants
-        #which reflect distance-meter in units of pixel.
-        #Please note: it is uncritical for y direction - we always
-        #assume a lenght of 720 px
         dst = np.float32(
             [[275, 30],
              [1029,30],
              [1029,720],
              [275,720]])
+
+        #TAKE CARE:
+        #In order to calculate a valid curvature radius, the dimensions of 
+        #x and y are very important. Changing in non-adequate way will result
+        #in a completly other curvature result
+
+        #matrix from normal into birds view
         self.persTransM = cv2.getPerspectiveTransform(src, dst)
+        #and the other way round
         self.persInvTransM = cv2.getPerspectiveTransform(dst, src)
         
+        
+        #when passing an image, hightlight the source points
         if not image is None:
             cv2.circle(image, tuple(src[0]), 5, (255,255,255),4)
             cv2.circle(image, tuple(src[1]), 5, (255,255,255),4)
@@ -145,13 +135,17 @@ class AdvancedLaneFinder(object):
             cv2.circle(image, tuple(src[3]), 5, (255,255,0),4)
         
         return image
-                
+              
+    #parameter True means from normal in birds perspective
+    #False will do the transformation in the opposite direction  
     def transformPerspective(self, image, forward = True):
         dim = image.shape[:2]
         if True == forward:
             return cv2.warpPerspective(image, self.persTransM, (dim[1], dim[0]))
         return cv2.warpPerspective(image, self.persInvTransM, (dim[1], dim[0]))
         
+    #switch into the HLS color space
+    #filter all pixels below a certain threshold
     def applyColorSpaceTransformation(self, image, thresh = 150):
         sat = cv2.cvtColor(image, cv2.COLOR_BGR2HLS)[:,:,2]
         red = image[:,:,2]
@@ -177,9 +171,10 @@ class AdvancedLaneFinder(object):
         #convert to 8 bit gray-value
         scaledSobel = np.uint8(255*absSobel/np.max(absSobel))
         output = np.zeros_like(scaledSobel)
-        output[ #((absgraddir >= directionThresh[0]) & (absgraddir <= directionThresh[1]) ) &\
+        output[ ((absgraddir >= directionThresh[0]) & (absgraddir <= directionThresh[1]) ) &\
             ((scaledSobel >= xgradThresh[0]) & (scaledSobel <= xgradThresh[1]) )] = 255
         return output
+
 
     def calibrateCameraUsingImage(self, imagepath):
         #member to store image and object points of each camera
@@ -216,9 +211,6 @@ class AdvancedLaneFinder(object):
             #find the chessboard, store the image points in corners
             ret, corners = cv2.findChessboardCorners(img, noCorners, None)
             
-#             print (objp, "ObjPtr", objpoints)
-            
-            
             if True == ret :
                 #success, store the image-/object points
                 objpoints.append(objp)
@@ -238,41 +230,39 @@ class AdvancedLaneFinder(object):
         
         return self.camMatrix is not None 
     
+    #apply the color space gradient and the direction gradient
+    #function and return as a result the logical OR of the two 
+    #resulting pictures
     def findEdges(self, image):
-#         if(self.counter < 100):
-#             cv2.imwrite("R:\\pic{:03d}.jpg".format(self.counter), image)
-#         self.counter += 1
-        #val = self.applyGradient(self.applyColorSpaceTransformation(image), (40,74), (20, 100) ) 
         val = self.applyColorSpaceTransformation(image, 120)
         val2 = self.applyGradient(image, (40,74), (20, 100))
-#         val2 = self.applyGradient(image, (70,110), (0, 255))
-#         cv2.imshow("Input", image)
-#         cv2.imshow("Color", val)
-#         cv2.imshow("Gra", val2)
         val3 = np.zeros_like(val2)
         val3[(val == 255) | (val2 == 255) ] = 255
-        
         return val3
-#         return np.dstack( (val3, val3*0, val3*0) )
     
     
-    def findPolygons(self, image):
+    
+    #find polynominals
+    #start with initial matching searching for two max values in 
+    #histogram of the lower half of the image
+    #
+    def findPolynomials(self, image):
         
-        out_img = np.dstack((image*0, image*0, image*0))
+        out_img = np.dstack((image*1, image*0, image*0))
         #identify the elements in the image, which aren't zero - meaning not black
         #this is done by image.nonzero!!
         nonzero = image.nonzero()
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
         # Set the width of the windows +/- margin
-        margin = 50
+        diff_margin = 80
         # Set minimum number of pixels found to recenter window
         minpix = 50
         
         
         leftx = None
         lefty = None 
-        
+        margin = diff_margin
         if( (self.leftFit == None) | (self.rightFit == None)):
             #create historgram along x-axis from the lower half of the picture
             #to find an appropriate startpoint for lane detection
@@ -280,29 +270,54 @@ class AdvancedLaneFinder(object):
             midpoint = np.int(histogram.shape[0]/2)
             leftx_base = np.argmax(histogram[:midpoint])
             rightx_base = np.argmax(histogram[midpoint:]) + midpoint
-    #         cv2.circle(out_img, (leftx_base, int(image.shape[0]/2)), 5, (255,0,0),4)
-    #         cv2.circle(out_img, (rightx_base, int(image.shape[0]/2)+50), 5, (255,0,0),4)
-    #         cv2.circle(out_img, (midpoint, int(image.shape[0]/2)+100), 5, (255,0,0),4)
             
             noWindows = 9
             window_height = np.int(image.shape[0]/noWindows)
             
             # Current positions to be updated for each window
+            # remember the previously used lefx and rightx to
+            # identify a tendency
+            # Assumption: the curvature will stay relatively constant
+            # in one direction.
             leftx_current = leftx_base
             rightx_current = rightx_base
+            leftx_prev = leftx_base
+            rightx_prev = rightx_base
+            tendencyLeft = 0
+            tendencyRight = 0
 
             # Create empty lists to receive left and right lane pixel indices
             left_lane_inds = []
             right_lane_inds = []
+            
+            #initial margin is choosen very big so that even in case
+            #of that the max-value of the histogram isn't reflecting
+            #the start of the lane, we have the change to identify the 
+            #lane in the first window.
+            #This workaround will provide better results in case that
+            #we start to initialize in a sharp turn
+            margin = int((rightx_base - leftx_base)/2)
             # Step through the windows one by one
-            for window in range(noWindows):
+            for window in range(int(noWindows/1)):
+                #in the first two iterations we won't really have a 
+                #tendency. We'll start taking tendency into considerations
+                #at the second window (meaning 3rd iteration)
+                if window > 1:
+                    tendencyLeft = int((leftx_current - leftx_prev) )
+                    tendencyRight = int((rightx_current - rightx_prev) )
+                leftx_prev = leftx_current
+                rightx_prev = rightx_current
+                
                 # Identify window boundaries in x and y (and right and left)
                 win_y_low = image.shape[0] - (window+1)*window_height
                 win_y_high = image.shape[0] - window*window_height
-                win_xleft_low = leftx_current - margin
-                win_xleft_high = leftx_current + margin
-                win_xright_low = rightx_current - margin
-                win_xright_high = rightx_current + margin
+                #enlarge the window in direction of tendency to 
+                #have the chance to identify really sharp curves
+                win_xleft_low = leftx_current - margin + tendencyLeft
+                win_xleft_high = leftx_current + margin + tendencyLeft
+                win_xright_low = rightx_current - margin + tendencyRight
+                win_xright_high = rightx_current + margin + tendencyRight
+                
                 # Draw the windows on the visualization image
                 cv2.rectangle(out_img,(win_xleft_low,win_y_low),(win_xleft_high,win_y_high),(0,255,0), 2) 
                 cv2.rectangle(out_img,(win_xright_low,win_y_low),(win_xright_high,win_y_high),(0,255,0), 2) 
@@ -316,8 +331,19 @@ class AdvancedLaneFinder(object):
                 # If you found > minpix pixels, recenter next window on their mean position
                 if len(good_left_inds) > minpix:
                     leftx_current = np.int(np.mean(nonzerox[good_left_inds]))
+                else:
+                    #if not - move the window in direction of tendency
+                    cv2.rectangle(out_img,(win_xleft_low,win_y_low),(win_xleft_high,win_y_high),(0,0,255), 2)
+                    leftx_current += int(tendencyLeft/1) 
                 if len(good_right_inds) > minpix:        
                     rightx_current = np.int(np.mean(nonzerox[good_right_inds]))
+                else:
+                    cv2.rectangle(out_img,(win_xright_low,win_y_low),(win_xright_high,win_y_high),(0,0,255), 2)
+                    rightx_current += int(tendencyRight/1)
+                
+                #adjust the margin - the first margin is bigger than the
+                #diff_margin in order to take care of misleading histogram means
+                margin = diff_margin
                 
             # Concatenate the arrays of indices (from list to array)
             left_lane_inds = np.concatenate(left_lane_inds)
@@ -358,17 +384,11 @@ class AdvancedLaneFinder(object):
         cv2.polylines(out_img, [ptsr], False, (0,0,255), 8)
         cv2.fillPoly(out_img, [pts], (0,255,0))
 
-#         lalaLand = np.dstack((image*1, image*1, image*1))
-#         cv2.imshow("lLA", lalaLand)
-#         cv2.addWeighted(out_img, 0.8, lalaLand, 0.3, 0)
-#         cv2.imshow("Persp", out_img)
-        
-        
         y_eval = np.max(ploty)
         # Define conversions in x and y from pixels space to meters
         # MAKE SURE YOU DIDN'T CHANGE THE DIMENSIONS IN X-AXIS DURING
         # PERSPECTIVE TRANSFORMATION
-        ym_per_pix = 30/720 # meters per pixel in y dimension
+        ym_per_pix = 30/720  # meters per pixel in y dimension
         xm_per_pix = 3.7/700 # meters per pixel in x dimension
         
         
@@ -377,9 +397,9 @@ class AdvancedLaneFinder(object):
         #to research for lanes using the histogram
         dist_betweenLanes_car = (right_fitx[-1] - left_fitx[-1]) * xm_per_pix
         dist_betweenLanes_horizont = (right_fitx[0] - left_fitx[0]) * xm_per_pix
-        self.carPos = ((1280/2.) - (left_fitx[-1] + dist_betweenLanes_car/2.0))   * xm_per_pix;
-        
-        if(abs(dist_betweenLanes_car - dist_betweenLanes_horizont) > 1.0):
+        self.carPx =  int(left_fitx[-1] +  (right_fitx[-1] - left_fitx[-1])/2.0)
+        self.carPos = (int(1280/2) - self.carPx)   * xm_per_pix;
+        if(abs(dist_betweenLanes_car - dist_betweenLanes_horizont) > 2.0):
             print ("Sanity check failed distance of cams {0:.1f} {1:.1f}".format(dist_betweenLanes_car, dist_betweenLanes_horizont))
             self.leftCurverad = None
             self.rightCurverad = None
@@ -393,10 +413,6 @@ class AdvancedLaneFinder(object):
             # Calculate the new radii of curvature
             self.leftCurverad  = ((1 + (2*left_fit_cr[0 ]*y_eval*ym_per_pix + left_fit_cr[1 ])**2)**1.5) / np.absolute(2*left_fit_cr[0 ])
             self.rightCurverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
-        
-#         cv2.polylines(out_img, [ptsl], False, (0,0,255),8 )
-#         cv2.polylines(out_img, [ptsr], False, (0,0,255),8 )
-        
         return out_img
         
         
@@ -404,16 +420,24 @@ class AdvancedLaneFinder(object):
         img = finder.undistortImage(image)
         img = finder.findEdges(img)
         img = finder.transformPerspective(img)
-        img = finder.findPolygons(img)
+        img = finder.findPolynomials(img)
         img = finder.transformPerspective(img, False)
+        
+        #add some textual content to the picture
+        cv2.line(img, ((640),600), ((640),719), (0,0,0), 3)
         if not (self.leftCurverad is None):
-            cv2.putText(img, "curvLeft {0:.2f}m curvRight {1:.2f}m".format(self.leftCurverad, self.rightCurverad), (10,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
-            cv2.putText(img, "Car is {0:.1f}m from middle of lane".format(self.carPos), (10,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
+            cv2.line( img, (self.carPx, 600), (self.carPx, 719), (0,0,255), 3)
+            cv2.putText(img, "curvMean {0:.2f}m ".format( (self.leftCurverad+ self.rightCurverad)/2.), (10,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
+            cv2.putText(img, "Car is {0:.2f}m from middle of lane".format(self.carPos), (10,100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
             cv2.putText(img, "No recoveries {0:d}".format(self.noRecoveries), (10,150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 3)
         else:
             cv2.putText(img, "Sanity check failed - restart histogram search", (10,50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 3)
-        return cv2.addWeighted(image, 0.8, img, 0.3, 0)
-#         return img  
+            
+        img = cv2.addWeighted(image, 0.8, img, 0.3, 0)
+        self.counter += 1
+        if self.counter == 20:
+            cv2.imwrite("R:/exampleLane.jpg", img)
+        return img
     
     #/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_
     #_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/_/
@@ -424,63 +448,26 @@ class AdvancedLaneFinder(object):
     writeImage = staticmethod(writeImage)
 
 if __name__ == '__main__':
-    
-#     AdvancedLaneFinder.readImages("../camera_cal")
-    
     PERSISTENCE = "R:/pers.bin"
     finder = AdvancedLaneFinder()
     #avoid the calibration all the time from beginning
     if(True == os.path.isfile(PERSISTENCE)):
         finder.readMembers(PERSISTENCE)
     else:
-        finder.calibrateCameraUsingImage("R:/camera_cal")
+        finder.calibrateCameraUsingImage("../camera_cal")
         finder.writeMembers(PERSISTENCE)
+    im=  cv2.imread("../test_images/straight_lines1.jpg")
+    finder.initializeTransformMatrix(im)
     
-#     finder.exampleShowUndistorted("../test_images/straight_lines1.jpg")
-    
-#     img = cv2.imread("../test_images/straight_lines2.jpg")
-    img = cv2.imread("R:/pic001.jpg")
-#     AdvancedLaneFinder.showImage(finder.initializeTransformMatrix(img))
-
-
-    finder.initializeTransformMatrix()
-#     img = finder.undistortImage(img)
-#     img = finder.transformPerspective(img)
-#     AdvancedLaneFinder.writeImage(img, "R:/Perspective_example001.jpg")
-#     img = finder.findEdges(img)
-# #     AdvancedLaneFinder.writeImage(img, "R:/FindEdges_Binary.jpg")
-# #     img = finder.findPolygons(img)
-# 
-#     img = finder.doAll(img)
-#     AdvancedLaneFinder.showImage(img)
-#     exit(1)
-    
-    
-#     AdvancedLaneFinder.showImage(finder.transformPerspective(img))
-# #    img = cv2.imread("R://pic042.jpg")
-#     val = finder.applyColorSpaceTransformation(img, 170)
-#     cv2.imshow("ColorSpace", val)
-#     val2 = finder.applyGradient(img, (40,74), (20, 100))
-#     cv2.imshow("Gradient", val2)
-#     val3 = np.zeros_like(val2)
-#     val3[(val == 255) | (val2 == 255) ] = 255
-#     cv2.imshow("Color&Grad",val3)
-#     AdvancedLaneFinder.showImage(val)
-#     AdvancedLaneFinder.showImage(finder.applyGradient(val, (40,74), (20, 100)))
-
-
-    
+#    enable in case the ffmpeg is mising
 #     imageio.plugins.ffmpeg.download()
 
-
     clip1 = VideoFileClip("../project_video.mp4")
-#     clip1 = VideoFileClip("../critical.mp4")
-#     clip1 = VideoFileClip("../short.mp4")
+#     clip1 = VideoFileClip("../challenge_video.mp4")
+#     clip1 = VideoFileClip("../recovery.mp4")
+#    clip1 = VideoFileClip("../short.mp4")
     clipo = clip1.fl_image(lambda x: cv2.cvtColor(finder.doAll(\
               cv2.cvtColor(x, cv2.COLOR_RGB2BGR) ), cv2.COLOR_BGR2RGB ))
-    clipo.write_videofile("R:\\test.mp4", audio=False)
-    
-#     for img in ReadFileIterator("../camera_cal"):
-#         calibrateCameraUsingImage(img)
+    clipo.write_videofile("../result3.mp4", audio=False)
     
     pass
