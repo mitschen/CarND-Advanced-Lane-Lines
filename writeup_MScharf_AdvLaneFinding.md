@@ -80,6 +80,9 @@ The goals / steps of this project are the following:
 
 You're reading it!
 
+> Michael Scharf
+> mitschen[at]gmail.com
+> https://github.com/mitschen/CarND-Advanced-Lane-Lines
 
 
 ### Camera Calibration
@@ -160,14 +163,14 @@ The white and blue circles in the image below show where these edges are located
 
 ![alt text][image7]
 
-As you can see i've streched the image in height but kept the dimensions in width. This transformation is a very critical point because it could lead to very strange behaviours. A typically problem I was facing was, that straigth lines didn't look straight after the transformation. This leads to very strange polynoms which then ends up in very strange curvatures. Another problem I was facing: keeping the dimension along y-axis leads to very sharp turns - this results in failures in the window-based polynomial finder. The reason for that was that the initial statingpoint (identified by mean of histogram) wasn't close enougth to the start of the lanes - so the resulting polynomial become  completely different than the one describing the lanes. 
+As you can see i've streched the image in height but kept the dimensions in width. This transformation is a very critical point because it could lead to very strange behaviours. A typically problem I was facing was, that straigth lines didn't look straight after the transformation. This leads to very strange polynomials which then ends up in very strange curvatures. Another problem I was facing: keeping the dimension along y-axis leads to very sharp turns - this results in failures in the window-based polynomial finder. The reason for that was that the initial statingpoint (identified by mean of histogram) wasn't close enougth to the start of the lanes - so the resulting polynomial become  completely different than the one describing the lanes. 
 At the end these values are identified by rule of thumb: we don't know the distance in height (meaning along y-axis) and therefore any transformation leads to a change in the curvature. But as you can see in the image - it's fine enought.
 
 ![alt text][image6]
 
 
 #### 4. Describe how (and identify where in your code) you identified lane-line pixels and fit their positions with a polynomial?
-To find the 2nd order polynome I've started with the approach suggested in the chapter 33. The implemenation can be found in the function `findPolynomials` which combines the 
+To find the 2nd order polynomial I've started with the approach suggested in the chapter 33. The implemenation can be found in the function `findPolynomials` which combines the 
 - histogram and sliding window approach to initially find the indices for points which seems to belong to the lanes
 - the incremental forward alignment for subsequent pictures, not using the histogram approach
 - the drawing of the polygons which should reflect the lanes
@@ -212,13 +215,19 @@ You can find the whole project video [here](https://github.com/mitschen/CarND-Ad
 
 
 
-### Discussion
+### Summary / Discussion
+In the given project I've provided a solution on how to realize an advanced lane finding mechanism. For an image, the lanes as well as the resulting curvature of the lanes are identified by
+* applying direction and color gradients in order to find the lane-edges
+* applying  transformation into "birds-view" perspective to fit the lane-edges to a polynomial of 2nd order
 
+Furthermore we've done in advance some calibration of the pictures in order to remove distortion.
 
+In order to improve the given solution, there are different parts that must be analyzed in more details
+* Perspective transformation: I've noticed, that for the other videos the corners used for perspective transformation arent working that good. In other words it looks like the mount-point of the camera changes from video to video. This leads to situations in which straight road-segments (and therefore straight lanes) aren't anylonger straight in the birds-view perspective. 
+* Gradients: applying my solution on the challenge_video, the lane detection isn't anylonger working that well. The reason for that is the noise given by e.g. the shadow of the lane boundary on the left side is leading to a misdetection of the edges. In order to solve this topic, i need to play around with 
+-- thresholds, e.g. specifying a valid gradient-range depending of the e.g. mean brightness of the image
+-- more sophisiticated combination of gradients
+-- exploration of other color-spaces (e.g LUV)
+* Curvature measurement: by rule of thumb we identify the corners and the resulting dimension for the birds-view perspective transformation. In order to be aligned to real-world scenario this transformation must be done regarding the ratio of x and y axis. Only by doing this, we can guarantee a valid curvature.
 
-#### 1. Briefly discuss any problems / issues you faced in your implementation of this project.  Where will your pipeline likely fail?  What could you do to make it more robust?
-
-
-
-Here I'll talk about the approach I took, what techniques I used, what worked and why, where the pipeline might fail and how I might improve it if I were going to pursue this project further.  
 
